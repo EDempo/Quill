@@ -1,25 +1,43 @@
 //#include <ctype.h>
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 #include <stdint.h>
 
 //DEFINES//
+#define VERSION "1.O"
 #define CTRL_KEY(k) ((k & 0x1f))
+
 
 //DATA//
 
+//Editor row
+typedef struct EditorRow {
+  int size;
+  char *chars;
+}erow;
+
 //Editor configuration
 typedef struct EditorConfig {
+  int cx,cy;
+  int rowoff;
   struct termios orig_termios;
-  int screenrows;
-  int screencols;
-} Editor_Config;
+  int screen_rows;
+  int screen_cols;
+  int num_rows;
+  erow *row;
+}econfig;
 
-Editor_Config E;
+econfig E;
 
 //TERMINAL//
 
@@ -33,14 +51,14 @@ void die(const char* s) {
 }
 
 //Use to restore original terminal settings after closing Quill
-void disable_raw_mode() {
+void disable_raw_mode(void) {
   if(tcsetattr(STDIN_FILENO, TCSAFLUSH , &E.orig_termios) == -1) {
     die("tcsetattr");
   }
 }
 
 //Obtain original terminal settings
-void enable_raw_mode() {
+void enable_raw_mode(void) {
   if(tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) { 
     die("tcsetattr");
   }
@@ -62,7 +80,7 @@ void enable_raw_mode() {
 
 
 //Reads in keystrokes
-char editor_read_key() {
+char editor_read_key(void) {
   int nread;
   char c;
   while((nread = read(STDIN_FILENO, &c, 1)) != 1) {
@@ -70,7 +88,25 @@ char editor_read_key() {
         die("read");
       }
   }
-  return c;
+  
+  if(c == '\x1b') {
+    char seq[3];
+    if(read(STDIN_FILENO, &seq[0], 1) != 1 ||
+        read(STDIN_FILENO, &seq[1], 1) != 1) { return '\x1b'; }
+
+    if(seq[0] == '[') {
+      switch(seq[1]) {
+        case 'A': return 'k';
+        case 'B': return 'j';
+        case 'C': return 'l';
+        case 'D': return 'h';
+      }
+    }
+    
+    return '\x1b';
+  } else {
+    return c;
+  }
 }
 
 int get_cursor_position(int *rows, int *cols) {
@@ -85,11 +121,14 @@ int get_cursor_position(int *rows, int *cols) {
 
   buf[i] = '\0';
   if(buf[0] != '\x1b' || buf[1] != '[') { return 1; } 
+  if(sscanf(&buf[2], "%d;%d", rows, cols) != 2) { return 1; }
+
   return 0;
 }
+
 int get_window_size(int *rows, int *cols) {
   struct winsize ws;
-  if(1 || ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+  if(ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
     if(write(STDOUT_FILENO, "\x1b[999C\x1b[999B",12) != 12) { return -1; }
     return get_cursor_position(rows,cols);
   } else {
@@ -99,51 +138,180 @@ int get_window_size(int *rows, int *cols) {
   }
 }
 
+//ROW OPERATIONS// 
+void editor_append_row(char *s, size_t len) {
+  E.row = realloc(E.row, sizeof(erow) * (E.num_rows +1));
+
+  int at  = E.num_rows;
+  E.row[at].size = len;
+  E.row[at].chars = malloc(len+1);
+  memcpy(E.row[at].chars, s, len);
+  E.row[at].chars[len] = '\0';
+  E.num_rows++;
+}
+
+//FILE I/O//
+void editor_open(char *filename) {
+  FILE *fp = fopen(filename, "r");
+  if(!fp) { die("fopen"); }
+  
+  char *line = NULL;
+  size_t line_cap = 0;
+  ssize_t line_len;
+  while((line_len = getline(&line, &line_cap,fp)) != -1) {
+    while(line_len > 0 && (line[line_len - 1] == '\n' || line[line_len - 1] == '\r')) {
+      line_len--;
+    }
+    editor_append_row(line, line_len);
+  }
+  free(line);
+  fclose(fp);
+}
+
+//APPEND BUFFER//
+typedef struct AppendBuffer {
+  char *b;
+  int len;
+}append_buffer;
+
+#define ABUF_INIT {NULL, 0}
+
+void abuf_append(append_buffer *abuf, const char *s, int len) {
+  char *new = realloc(abuf->b, abuf->len + len);
+  if(new == NULL) { return; }
+  memcpy(&new[abuf->len],s,len);
+  abuf->b = new;
+  abuf->len += len;
+}
+
+void abuf_free(append_buffer *abuf) {
+  free(abuf->b);
+}
+
 //OUTPUT//
 
+//Drawing welcome
+void editor_draw_welcome(append_buffer *abuf) {
+  char welcome[80];
+  int welcome_len = snprintf(welcome, sizeof(welcome), "Quill Editor %s", VERSION);
+  if(welcome_len > E.screen_cols) {
+    welcome_len = E.screen_cols;
+  }
+  abuf_append(abuf, "~", 1);
+  int padding = (E.screen_cols - welcome_len)/2 - 1; //Finding center of the screen
+  while(padding) { 
+    abuf_append(abuf, " ", 1);
+    padding--;
+  }
+  abuf_append(abuf, welcome, welcome_len);
+}
+
 //Drawing ~ to mark all rows
-void editor_draw_rows() {
+void editor_draw_rows(append_buffer *abuf) {
   int y;
-  for(y = 0; y < E.screenrows; y++) {
-    write(STDOUT_FILENO, "~\r\n", 3);
+  for(y = 0; y < E.screen_rows - 1; y++) {
+    if(y < E.num_rows) {
+      int len = E.row[y].size;
+      if(len > E.screen_cols) { len = E.screen_cols; }
+      abuf_append(abuf, E.row[y].chars, len);
+    } else {
+      if(E.num_rows == 0 && y == E.screen_rows / 2) {
+        editor_draw_welcome(abuf);
+      } else {
+      abuf_append(abuf, "~", 1);
+      }
+    }
+    abuf_append(abuf, "\x1b[K", 3); //Clearing lines as they are redrawn
+    if(y < E.screen_rows - 1) {
+      abuf_append(abuf, "\r\n", 2);
+    }
   }
 }
 
 //Clears the screen
 void editor_refresh_screen() {
-  write(STDOUT_FILENO, "\x1b[2J", 4);
-  write(STDOUT_FILENO, "\x1b[H", 3);
-  editor_draw_rows();
-  write(STDOUT_FILENO, "\x1b[H", 3);
+  append_buffer abuf = ABUF_INIT; 
+  
+  abuf_append(&abuf, "\x1b[?25l", 6); //Hiding cursor
+  abuf_append(&abuf, "\x1b[H", 3); //Position the cursor at top left
+  editor_draw_rows(&abuf);
+  
+  //Moving cursor to last stored position before screen refresh
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  abuf_append(&abuf, buf, strlen(buf));
+
+  abuf_append(&abuf, "\x1b[?25h", 6); //Reshowing cursor
+  write(STDOUT_FILENO, abuf.b, abuf.len);
+  abuf_free(&abuf);
 }
 
 //INPUT//
 
+//Movinng the cursor
+void editor_move_cursor(char key) {
+  switch(key) {
+    case 'h':
+      if(E.cx != 0) {
+       E.cx--;
+      }
+      break;
+    case 'l':
+      if(E.cx != E.screen_cols - 1) {
+       E.cx++;
+      }
+      break;
+    case 'k':
+      if(E.cy != 0) {
+       E.cy--;
+      }
+      break;
+    case 'j':
+      if(E.cy != E.screen_rows - 1) {
+       E.cy++;
+      }
+      break;
+  }
+}
+
 //Takes in keystrokes and handles any specific keystroke cases
-void editor_process_keypress() {
+void editor_process_keypress(void) {
   char c = editor_read_key();
   switch(c) {
   //Keystroke to close program
   case CTRL_KEY('q'): 
-    write(STDOUT_FILENO, "\x1b[2J", 4);
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    write(STDOUT_FILENO, "\x1b[2J", 4); //Clear the screen
+    write(STDOUT_FILENO, "\x1b[H", 3); //Position the cursor at the top left
     exit(0);
+    break;
+  case 'h':
+  case 'j':
+  case 'k':
+  case 'l':
+    editor_move_cursor(c);
     break;
   }
 }
 
 //INIT// 
 
-void initEditor() {
-  if (get_window_size(&E.screenrows, &E.screencols) == -1) {
+void initEditor(void) {
+  E.cx = 0;
+  E.cy = 0;
+  E.rowoff = 0;
+  E.num_rows = 0;
+  E.row = NULL;
+  if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
     die("get_window_size");
   }
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   enable_raw_mode();
   initEditor();
-
+  if(argc >= 2) {
+    editor_open(argv[1]);
+  }
   while(1) {
     editor_refresh_screen();
     editor_process_keypress();
