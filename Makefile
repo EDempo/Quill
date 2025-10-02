@@ -1,6 +1,6 @@
 CC = gcc
 
-CFLAGS = -Wall -Werror -std=c99 -pedantic
+CFLAGS = -Wall -Werror -std=c99 -pedantic -fsanitize=address
 
 SRCS = quill.c
 

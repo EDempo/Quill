@@ -23,13 +23,16 @@
 //Editor row
 typedef struct EditorRow {
   int size;
+  int rsize;
   char *chars;
+  char *render;
 }erow;
 
 //Editor configuration
 typedef struct EditorConfig {
   int cx,cy;
-  int rowoff;
+  int row_off;
+  int col_off;
   struct termios orig_termios;
   int screen_rows;
   int screen_cols;
@@ -190,6 +193,22 @@ void abuf_free(append_buffer *abuf) {
 
 //OUTPUT//
 
+//Scrolling
+void editor_scroll() {
+  if (E.cy < E.row_off) {
+    E.row_off = E.cy;
+  }
+  if(E.cy >= E.row_off + E.screen_rows) {
+    E.row_off = E.cy - E.screen_rows + 1;
+  }
+  if(E.cx < E.col_off) {
+    E.col_off = E.cx;
+  }
+  if(E.cx >= E.col_off + E.screen_cols) {
+    E.col_off = E.cx - E.screen_cols + 1;
+  }
+}
+
 //Drawing welcome
 void editor_draw_welcome(append_buffer *abuf) {
   char welcome[80];
@@ -210,10 +229,11 @@ void editor_draw_welcome(append_buffer *abuf) {
 void editor_draw_rows(append_buffer *abuf) {
   int y;
   for(y = 0; y < E.screen_rows - 1; y++) {
-    if(y < E.num_rows) {
-      int len = E.row[y].size;
-      if(len > E.screen_cols) { len = E.screen_cols; }
-      abuf_append(abuf, E.row[y].chars, len);
+    int filerow = y + E.row_off;
+    if(filerow < E.num_rows) {
+      int len = E.row[filerow].size - E.col_off;
+      if(len < 0) { len = 0; }
+      abuf_append(abuf, &E.row[filerow].chars[E.col_off], len);
     } else {
       if(E.num_rows == 0 && y == E.screen_rows / 2) {
         editor_draw_welcome(abuf);
@@ -230,6 +250,8 @@ void editor_draw_rows(append_buffer *abuf) {
 
 //Clears the screen
 void editor_refresh_screen() {
+  editor_scroll();
+
   append_buffer abuf = ABUF_INIT; 
   
   abuf_append(&abuf, "\x1b[?25l", 6); //Hiding cursor
@@ -238,7 +260,7 @@ void editor_refresh_screen() {
   
   //Moving cursor to last stored position before screen refresh
   char buf[32];
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.row_off) + 1, (E.cx - E.col_off) + 1);
   abuf_append(&abuf, buf, strlen(buf));
 
   abuf_append(&abuf, "\x1b[?25h", 6); //Reshowing cursor
@@ -250,15 +272,22 @@ void editor_refresh_screen() {
 
 //Movinng the cursor
 void editor_move_cursor(char key) {
+  erow *row = (E.cy >= E.num_rows) ? NULL : &E.row[E.cy];
   switch(key) {
     case 'h':
       if(E.cx != 0) {
        E.cx--;
+      }else if(E.cy > 0) {
+        E.cy--;
+        E.cx = E.row[E.cy].size;
       }
       break;
     case 'l':
-      if(E.cx != E.screen_cols - 1) {
-       E.cx++;
+      if(row && E.cx < row->size){
+         E.cx++;
+      } else if(E.cy < E.num_rows) {
+        E.cy++;
+        E.cx = 0;
       }
       break;
     case 'k':
@@ -267,10 +296,16 @@ void editor_move_cursor(char key) {
       }
       break;
     case 'j':
-      if(E.cy != E.screen_rows - 1) {
+      if(E.cy < E.num_rows) {
        E.cy++;
       }
       break;
+  }
+
+  row = (E.cy >= E.num_rows) ? NULL : &E.row[E.cy]; 
+  int len = row ? row->size : 0; 
+  if(E.cx > len) {
+    E.cx = len;
   }
 }
 
@@ -298,7 +333,8 @@ void editor_process_keypress(void) {
 void initEditor(void) {
   E.cx = 0;
   E.cy = 0;
-  E.rowoff = 0;
+  E.row_off = 0;
+  E.col_off = 0;
   E.num_rows = 0;
   E.row = NULL;
   if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
