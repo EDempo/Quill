@@ -1,7 +1,7 @@
-// #include <ctype.h>
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -23,6 +23,8 @@
 
 // PROTOTYPES //
 void editor_set_status_message(const char *, ...);
+void editor_refresh_screen();
+char *editor_prompt(char *prompt);
 // DATA//
 
 typedef struct EditorRow {
@@ -46,7 +48,7 @@ typedef struct EditorConfig {
   erow *row;       // 8 bytes
   int dirty;       // 4 bytes, dirty flag
   char mode;       // 1 byte for mode (normal or insert)
-  char *file;      // 8 bytes for a file name
+  char *filename;  // 8 bytes for a file name
   char statusmsg[80];
   time_t statusmsg_time;
   struct termios orig_termios; // This is a low-level struct which gives us
@@ -331,18 +333,23 @@ char *editor_rows_to_string(int *buf_len) {
 }
 
 void editor_save() {
-  if (E.file == NULL)
-    return;
+  if (E.filename == NULL) {
+    E.filename = editor_prompt("Save as: %s (ESC to cancel)");
+    if (E.filename == NULL) {
+      editor_set_status_message("Save aborted");
+      return;
+    }
+  }
   int len;
   char *buf = editor_rows_to_string(&len);
-  int fd = open(E.file, O_RDWR | O_CREAT, 0644);
+  int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
   if (fd != -1) {
     if (ftruncate(fd, len) != -1) {
       if (write(fd, buf, len) == len) {
         close(fd);
         free(buf);
         E.dirty = 0;
-        editor_set_status_message("\"%s\" %dL, %db written to disk", E.file,
+        editor_set_status_message("\"%s\" %dL, %db written to disk", E.filename,
                                   E.num_rows, len);
         return;
       }
@@ -355,8 +362,8 @@ void editor_save() {
 
 void editor_open(char *filename) {
   FILE *fp = fopen(filename, "r");
-  free(E.file);
-  E.file = strdup(filename);
+  free(E.filename);
+  E.filename = strdup(filename);
   if (!fp) {
     die("fopen");
   }
@@ -465,7 +472,7 @@ void editor_draw_status_bar(append_buffer *ab) {
   abuf_append(ab, "\x1b[7m", 4);
   char status[80], rstatus[80];
   int len = snprintf(status, sizeof(status), "%.20s - %d lines %s %s",
-                     E.file ? E.file : "[No Name]", E.num_rows,
+                     E.filename ? E.filename : "[No Name]", E.num_rows,
                      E.mode == 'n' ? "Normal" : "Insert",
                      E.dirty ? "(modified)" : "");
   int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.num_rows);
@@ -532,7 +539,39 @@ void editor_set_status_message(const char *fmt, ...) {
 }
 // INPUT//
 
-// Movinng the cursor
+char *editor_prompt(char *prompt) {
+  size_t buf_size = 128;
+  char *buf = malloc(buf_size);
+  size_t buf_len = 0;
+  buf[0] = '\0';
+
+  while (1) {
+    editor_set_status_message(prompt, buf);
+    editor_refresh_screen();
+
+    int c = editor_read_key();
+    if (c == BACKSPACE) {
+      if (buf_len != 0) {
+        buf[--buf_len] = '\0';
+      }
+    } else if (c == '\x1b') {
+      editor_set_status_message("");
+      free(buf);
+      return NULL;
+    } else if (c == '\r' && buf_len != 0) {
+      editor_set_status_message("");
+      return buf;
+    } else if (!iscntrl(c) && c < 128) {
+      if (buf_len == buf_size - 1) {
+        buf_size *= 2;
+        buf = realloc(buf, buf_size);
+      }
+      buf[buf_len++] = c;
+      buf[buf_len] = '\0';
+    }
+  }
+}
+
 void editor_move_cursor(char key) {
   erow *row = (E.cy >= E.num_rows) ? NULL : &E.row[E.cy];
   switch (key) {
@@ -644,7 +683,7 @@ void init_editor(void) {
   E.row = NULL;
   E.dirty = 0;
   E.mode = 'n';
-  E.file = NULL;
+  E.filename = NULL;
   E.statusmsg[0] = '\0';
   E.statusmsg_time = 0;
   if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
