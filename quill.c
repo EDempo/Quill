@@ -19,13 +19,21 @@
 #define VERSION "1.O"
 #define TAB_STOP 8
 #define CTRL_KEY(k) ((k & 0x1f))
-#define BACKSPACE 127
 
 // PROTOTYPES //
+void editor_move_cursor(char key);
 void editor_set_status_message(const char *, ...);
 void editor_refresh_screen();
 char *editor_prompt(char *prompt);
+
 // DATA//
+enum editor_keys {
+  ARROW_LEFT = -3,
+  ARROW_RIGHT,
+  ARROW_UP,
+  ARROW_DOWN,
+  BACKSPACE = 127
+};
 
 typedef struct EditorRow {
   int size;     // 4 bytes
@@ -117,13 +125,13 @@ char editor_read_key(void) {
       // Keystroke handling for movement
       switch (seq[1]) {
       case 'A':
-        return 'k';
+        return ARROW_UP;
       case 'B':
-        return 'j';
+        return ARROW_DOWN;
       case 'C':
-        return 'l';
+        return ARROW_RIGHT;
       case 'D':
-        return 'h';
+        return ARROW_LEFT;
       }
     }
 
@@ -576,6 +584,7 @@ void editor_move_cursor(char key) {
   erow *row = (E.cy >= E.num_rows) ? NULL : &E.row[E.cy];
   switch (key) {
   case 'h':
+  case ARROW_LEFT:
     if (E.cx != 0) {
       E.cx--;
     } else if (E.cy > 0) {
@@ -583,7 +592,9 @@ void editor_move_cursor(char key) {
       E.cx = E.row[E.cy].size;
     }
     break;
+
   case 'l':
+  case ARROW_RIGHT:
     if (row && E.cx < row->size) {
       E.cx++;
     } else if (E.cy < E.num_rows) {
@@ -591,12 +602,16 @@ void editor_move_cursor(char key) {
       E.cx = 0;
     }
     break;
+
   case 'k':
+  case ARROW_UP:
     if (E.cy != 0) {
       E.cy--;
     }
     break;
+
   case 'j':
+  case ARROW_DOWN:
     if (E.cy < E.num_rows) {
       E.cy++;
     }
@@ -654,6 +669,13 @@ void editor_process_keypress(void) {
     } else {
       editor_insert_char(c);
     }
+    break;
+
+  case ARROW_UP:
+  case ARROW_DOWN:
+  case ARROW_LEFT:
+  case ARROW_RIGHT:
+    editor_move_cursor(c);
     break;
 
   case CTRL_KEY('h'):
