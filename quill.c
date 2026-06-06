@@ -104,7 +104,6 @@ void enable_raw_mode(void) {
   }
 }
 
-// Reads in keystrokes
 char editor_read_key(void) {
   int nread;
   char c;
@@ -122,7 +121,7 @@ char editor_read_key(void) {
     }
 
     if (seq[0] == '[') {
-      // Keystroke handling for movement
+      // Keystroke handling for handling arrow keys
       switch (seq[1]) {
       case 'A':
         return ARROW_UP;
@@ -187,7 +186,7 @@ int editor_row_conversion(erow *row, int cx) {
   for (j = 0; j < cx; j++) {
     if (row->chars[j] == '\t') {
       rx += (TAB_STOP - 1) - (rx % TAB_STOP);
-    }
+   }
     rx++;
   }
   return rx;
