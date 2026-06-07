@@ -407,7 +407,7 @@ void editor_open(char *filename) {
 // SEARCHING //
 
 void editor_find_callback(char *query, int key) {
-  static int last_match = -1, direction = -1;
+  static int last_match = -1, direction = 1;
 
   if (key == '\r' || key == '\x1b') { 
     last_match = -1;
@@ -422,12 +422,20 @@ void editor_find_callback(char *query, int key) {
     direction = 1;
   }
 
-  int i;
+  if (last_match == -1) { direction = 1; }
+  int current = last_match, i;
   for(i = 0; i < E.num_rows; i++) {
-    erow *row = &E.row[i];
+    current += direction;
+    if (current == -1) { 
+      current = E.num_rows - 1; 
+    } else if (current == E.num_rows) { 
+      current = 0; 
+    }
+    erow *row = &E.row[current];
     char *match = strstr(row->render, query);
-    if(match) {
-      E.cy = i;
+    if (match) {
+      last_match = current;
+      E.cy = current;
       E.cx = editor_row_reverse_conversion(row, match - row->render);
       E.row_off = E.num_rows;
       break;
@@ -436,7 +444,7 @@ void editor_find_callback(char *query, int key) {
 }
 void editor_find() {
   int saved_cx = E.cx, saved_cy = E.cy, saved_col_off = E.col_off, saved_rowoff = E.row_off;
-  char *query = editor_prompt("Search: %s (ESC to cancel)", editor_find_callback);
+  char *query = editor_prompt("Search: %s (ESC/Arrows/Enter)", editor_find_callback);
   if (query) {
     free(query); 
   } else {
@@ -626,7 +634,7 @@ char *editor_prompt(char *prompt, void (*callback) (char *, int)) {
       editor_set_status_message("");
       if (callback) { callback(buf,c); }
       return buf;
-    } else if (!iscntrl(c) && c < 128) {
+    } else if (!iscntrl(c) && c < 128 && (c != ARROW_LEFT && c != ARROW_RIGHT && c != ARROW_UP && c != ARROW_DOWN) ) {
       if (buf_len == buf_size - 1) {
         buf_size *= 2;
         buf = realloc(buf, buf_size);
